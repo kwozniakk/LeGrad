@@ -7,3 +7,5 @@ matplotlib
 numpy
 requests
 einops
+transformers>=4.33.0
+omegaconf>=2.3.0

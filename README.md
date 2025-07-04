@@ -37,6 +37,7 @@ $ pip install legrad_torch
 - Try out our web demo on [HuggingFace Spaces](https://huggingface.co/spaces) [![Hugging Face Spaces](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-blue)](https://huggingface.co/spaces/WalidBouss/LeGrad)
 - Run the demo on Google Colab: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/drive/1ooB4AB9NRRe6Z-VilZizFOlFpTiKQHAc?usp=sharing)
 - Run [`playground.py`](./playground.py) for a usage example.
+- Run [`cvlface_playground.py`](./cvlface_playground.py) to test CVLFace models.
 
 To run the gradio app locally, first install gradio and then run [`app.py`](./app.py):
 ```bash
@@ -89,6 +90,38 @@ explainability_map = model.compute_legrad_clip(image=image, text_embedding=text_
 
 # ___ (Optional): Visualize overlay of the image + heatmap ___
 visualize(heatmaps=explainability_map, image=image)
+```
+
+### CVLFace Example
+To run LeGrad on CVLFace models use the helper functions to download a backbone and an aligner from Hugging Face:
+
+```python
+from torchvision.transforms import Compose, Resize, ToTensor, Normalize, InterpolationMode
+from PIL import Image
+import torch
+
+from legrad import LeWrapper, visualize
+from legrad.utils import load_model_by_repo_id
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+vit_repo = 'minchul/cvlface_adaface_vit_base_kprpe_webface12m'
+dfa_repo = 'minchul/cvlface_DFA_mobilenet'
+cache = '~/.cvlface_cache'
+
+backbone = load_model_by_repo_id(vit_repo, f'{cache}/{vit_repo}', None).to(device).eval()
+aligner = load_model_by_repo_id(dfa_repo, f'{cache}/{dfa_repo}', None).to(device).eval()
+
+preprocess = Compose([
+    Resize((112, 112), interpolation=InterpolationMode.BILINEAR),
+    ToTensor(),
+    Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+])
+image = preprocess(Image.open('face.jpg')).unsqueeze(0).to(device)
+aligned, *_ = aligner(image)
+
+model = LeWrapper(backbone)
+heatmap = model.compute_legrad(image=aligned, text_embedding=None)
+visualize(image=image, heatmaps=heatmap)
 ```
  
 
