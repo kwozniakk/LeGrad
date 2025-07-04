@@ -25,11 +25,11 @@ preprocess = Compose([
     Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
 ])
 image = preprocess(Image.open(img_path).convert('RGB')).unsqueeze(0).to(device)
-aligned, *_ = aligner(image)
+aligned, keypoints, *_ = aligner(image)
 
 # 3. Equip backbone with LeGrad and compute explanation
 model = LeWrapper(backbone)
-heatmap = model.compute_legrad(image=aligned, text_embedding=None)
+heatmap = model.compute_legrad(image=aligned, text_embedding=None, keypoints=keypoints)
 
 # 4. Visualize result
 visualize(image=image, heatmaps=heatmap)

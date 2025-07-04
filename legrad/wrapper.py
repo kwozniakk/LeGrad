@@ -156,7 +156,7 @@ class LeWrapper(nn.Module):
             self.visual.blocks[layer].attn.forward = types.MethodType(hooked_cvlface_attention_forward,
                                                                       self.visual.blocks[layer].attn)
 
-    def compute_legrad(self, text_embedding, image=None, apply_correction=True):
+    def compute_legrad(self, text_embedding, image=None, keypoints=None, apply_correction=True):
         if 'clip' in self.model_type:
             return self.compute_legrad_clip(text_embedding, image)
         elif 'siglip' in self.model_type:
@@ -164,7 +164,9 @@ class LeWrapper(nn.Module):
         elif 'coca' in self.model_type:
             return self.compute_legrad_coca(text_embedding, image)
         elif 'cvlface' in self.model_type:
-            return self.compute_legrad_cvlface(image, text_embedding)
+            return self.compute_legrad_cvlface(image=image,
+                                               target_embedding=text_embedding,
+                                               keypoints=keypoints)
 
     def compute_legrad_clip(self, text_embedding, image=None):
         num_prompts = text_embedding.shape[0]
@@ -319,10 +321,13 @@ class LeWrapper(nn.Module):
 
         return Res
 
-    def compute_legrad_cvlface(self, image, target_embedding=None):
+    def compute_legrad_cvlface(self, image, target_embedding=None, keypoints=None):
         if target_embedding is None:
             with torch.no_grad():
-                target_embedding = self.forward(image)
+                if keypoints is not None:
+                    target_embedding = self.forward(image, keypoints=keypoints)
+                else:
+                    target_embedding = self.forward(image)
                 target_embedding = F.normalize(target_embedding, dim=-1)
         else:
             target_embedding = F.normalize(target_embedding, dim=-1)
