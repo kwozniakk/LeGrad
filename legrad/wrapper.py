@@ -332,6 +332,12 @@ class LeWrapper(nn.Module):
         else:
             target_embedding = F.normalize(target_embedding, dim=-1)
 
+        # ensure intermediate features are recorded with gradients
+        if keypoints is not None:
+            _ = self.forward(image, keypoints=keypoints)
+        else:
+            _ = self.forward(image)
+
         blocks_list = list(dict(self.visual.blocks.named_children()).values())
         w = h = int(math.sqrt(self.visual.num_patches))
 
