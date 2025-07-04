@@ -93,7 +93,7 @@ visualize(heatmaps=explainability_map, image=image)
 ```
 
 ### CVLFace Example
-To run LeGrad on CVLFace models use the helper functions to download a backbone and an aligner from Hugging Face:
+To run LeGrad on CVLFace models use the helper functions to download a backbone and an aligner from Hugging Face. The download utility now relies on `snapshot_download` so all files required by the models are fetched automatically. You will need the `easydict` package in addition to the regular requirements.
 
 ```python
 from torchvision.transforms import Compose, Resize, ToTensor, Normalize, InterpolationMode

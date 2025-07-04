@@ -12,7 +12,7 @@ import torch
 from torch import Tensor
 from torch.nn import functional as F
 from transformers import AutoModel
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, snapshot_download
 
 import open_clip
 from open_clip import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
@@ -592,18 +592,24 @@ def visualize(image, heatmaps, alpha=0.6, text_prompts: List=None, save_path: Op
 # ----------------------------------------------------------------------------
 
 def download(repo_id: str, path: str, HF_TOKEN: str | None = None):
+    """Download an entire repository snapshot from the Hugging Face Hub.
+
+    The previous implementation selectively downloaded files listed in the
+    ``files.txt`` manifest which caused import errors when modules referenced
+    assets that were not listed. The CVLFace repositories rely on additional
+    submodules (e.g. ``models/vit_kprpe/RPE``) which were missing and resulted
+    in ``KeyError`` exceptions like ``'models.vit_kprpe.RPE'``.  By using the
+    Hub's ``snapshot_download`` utility we ensure that all files required for the
+    model are retrieved.
+    """
+
     os.makedirs(path, exist_ok=True)
-    files_path = os.path.join(path, 'files.txt')
-    if not os.path.exists(files_path):
-        hf_hub_download(repo_id, 'files.txt', token=HF_TOKEN,
-                        local_dir=path, local_dir_use_symlinks=False)
-    with open(files_path, 'r') as f:
-        files = [line for line in f.read().split('\n') if line]
-    for file in files + ['config.json', 'wrapper.py', 'model.safetensors']:
-        full_path = os.path.join(path, file)
-        if not os.path.exists(full_path):
-            hf_hub_download(repo_id, file, token=HF_TOKEN,
-                            local_dir=path, local_dir_use_symlinks=False)
+    snapshot_download(
+        repo_id,
+        local_dir=path,
+        local_dir_use_symlinks=False,
+        token=HF_TOKEN,
+    )
 
 
 def load_model_from_local_path(path: str, HF_TOKEN: str | None = None):
