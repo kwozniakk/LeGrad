@@ -4,10 +4,15 @@ import numpy as np
 from PIL import Image
 import cv2 as cv2
 import warnings
+import os
+import sys
+import shutil
 
 import torch
 from torch import Tensor
 from torch.nn import functional as F
+from transformers import AutoModel
+from huggingface_hub import hf_hub_download
 
 import open_clip
 from open_clip import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
@@ -385,6 +390,46 @@ def hooked_torch_func_multi_head_attention_forward(query: Tensor,
         return attn_output, None
 
 
+# ------------ Hooked CVLFace Attention ------------
+def hooked_cvlface_attention_forward(self, x, extra_ctx=None):
+    batch_size, num_token, embed_dim = x.shape
+    qkv = self.qkv(x).reshape(batch_size, num_token, 3, self.num_heads, embed_dim // self.num_heads).permute(2, 0, 3, 1, 4)
+    q, k, v = qkv[0], qkv[1], qkv[2]
+    q = q * self.scale
+    attn = q @ k.transpose(-2, -1)
+
+    if self.rpe_k is not None and extra_ctx is not None:
+        ctx = extra_ctx['rel_keypoints']
+        attn += self.rpe_k(ctx)
+
+    if self.rpe_q is not None:
+        attn += self.rpe_q(k * self.scale).transpose(2, 3)
+
+    attn = attn.softmax(dim=-1)
+    self.attention_map = attn
+    attn = self.attn_drop(attn)
+
+    out = attn @ v
+    if self.rpe_v is not None:
+        out += self.rpe_v(attn)
+
+    x = out.transpose(1, 2).reshape(batch_size, num_token, embed_dim)
+    x = self.proj(x)
+    x = self.proj_drop(x)
+    return x
+
+
+# ------------ Hooked CVLFace Residual Transformer Block ------------
+def hooked_cvlface_block_forward(self, x, extra_ctx=None):
+    norm_x = self.norm1(x)
+    attn_out = self.attn(norm_x, extra_ctx=extra_ctx)
+    x = x + self.drop_path(attn_out)
+    self.feat_post_attn = x
+    x = x + self.drop_path(self.mlp(self.norm2(x)))
+    self.feat_post_mlp = x
+    return x
+
+
 # ------------ Hooked TimmModel's Residual Transformer Block ------------
 def hooked_resblock_timm_forward(self, x: torch.Tensor) -> torch.Tensor:
     x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x))))
@@ -540,6 +585,43 @@ def visualize(image, heatmaps, alpha=0.6, text_prompts: List=None, save_path: Op
         plt.show()
         if save_path is not None:
             plt.savefig(f'heatmap_{text_prompts[i]}.png')
+
+
+# ----------------------------------------------------------------------------
+# HuggingFace helpers to load CVLFace models
+# ----------------------------------------------------------------------------
+
+def download(repo_id: str, path: str, HF_TOKEN: str | None = None):
+    os.makedirs(path, exist_ok=True)
+    files_path = os.path.join(path, 'files.txt')
+    if not os.path.exists(files_path):
+        hf_hub_download(repo_id, 'files.txt', token=HF_TOKEN,
+                        local_dir=path, local_dir_use_symlinks=False)
+    with open(files_path, 'r') as f:
+        files = [line for line in f.read().split('\n') if line]
+    for file in files + ['config.json', 'wrapper.py', 'model.safetensors']:
+        full_path = os.path.join(path, file)
+        if not os.path.exists(full_path):
+            hf_hub_download(repo_id, file, token=HF_TOKEN,
+                            local_dir=path, local_dir_use_symlinks=False)
+
+
+def load_model_from_local_path(path: str, HF_TOKEN: str | None = None):
+    cwd = os.getcwd()
+    os.chdir(path)
+    sys.path.insert(0, path)
+    model = AutoModel.from_pretrained(path, trust_remote_code=True, token=HF_TOKEN)
+    os.chdir(cwd)
+    sys.path.pop(0)
+    return model
+
+
+def load_model_by_repo_id(repo_id: str, save_path: str, HF_TOKEN: str | None = None,
+                          force_download: bool = False):
+    if force_download and os.path.exists(save_path):
+        shutil.rmtree(save_path)
+    download(repo_id, save_path, HF_TOKEN)
+    return load_model_from_local_path(save_path, HF_TOKEN)
 
 
 def list_pretrained():

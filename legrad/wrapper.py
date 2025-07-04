@@ -13,6 +13,8 @@ from .utils import hooked_resblock_forward, \
     hooked_attention_forward, \
     hooked_resblock_timm_forward, \
     hooked_attentional_pooler_timm_forward, \
+    hooked_cvlface_block_forward, \
+    hooked_cvlface_attention_forward, \
     vit_dynamic_size_forward, \
     min_max, \
     hooked_torch_multi_head_attention_forward
@@ -36,7 +38,7 @@ class LeWrapper(nn.Module):
     def _activate_hooks(self, layer_index):
         # ------------ identify model's type ------------
         print('Activating necessary hooks and gradients ....')
-        if isinstance(self.visual, VisionTransformer):
+        if hasattr(self, 'visual') and isinstance(self.visual, VisionTransformer):
             # --- Activate dynamic image size ---
             self.visual.forward = types.MethodType(vit_dynamic_size_forward, self.visual)
             # Get patch size
@@ -52,7 +54,8 @@ class LeWrapper(nn.Module):
                 self.model_type = 'coca'
                 self._activate_att_pool_hooks(layer_index=layer_index)
 
-        elif isinstance(self.visual, TimmModel):
+        elif hasattr(self, 'visual') and isinstance(self.visual, TimmModel):
+            # existing TIMM case
             # --- Activate dynamic image size ---
             self.visual.trunk.dynamic_img_size = True
             self.visual.trunk.patch_embed.dynamic_img_size = True
@@ -66,6 +69,12 @@ class LeWrapper(nn.Module):
             self.starting_depth = layer_index if layer_index >= 0 else len(
                 self.visual.trunk.blocks) + layer_index
             self._activate_timm_attn_pool_hooks(layer_index=layer_index)
+        elif hasattr(self, 'net') or (hasattr(self, 'model') and hasattr(self.model, 'net')):
+            self.model_type = 'cvlface'
+            self.visual = getattr(self, 'net', getattr(self.model, 'net'))
+            self.patch_size = self.visual.patch_embed.patch_size[0]
+            self.starting_depth = layer_index if layer_index >= 0 else len(self.visual.blocks) + layer_index
+            self._activate_cvlface_hooks(layer_index=layer_index)
         else:
             raise ValueError(
                 "Model currently not supported, see legrad.list_pretrained() for a list of available models")
@@ -133,6 +142,20 @@ class LeWrapper(nn.Module):
         self.visual.trunk.attn_pool.forward = types.MethodType(hooked_attentional_pooler_timm_forward,
                                                                self.visual.trunk.attn_pool)
 
+    def _activate_cvlface_hooks(self, layer_index):
+        for name, param in self.named_parameters():
+            param.requires_grad = False
+            if name.startswith('visual.blocks'):
+                depth = int(name.split('visual.blocks.')[-1].split('.')[0])
+                if depth >= self.starting_depth:
+                    param.requires_grad = True
+
+        for layer in range(self.starting_depth, len(self.visual.blocks)):
+            self.visual.blocks[layer].forward = types.MethodType(hooked_cvlface_block_forward,
+                                                                 self.visual.blocks[layer])
+            self.visual.blocks[layer].attn.forward = types.MethodType(hooked_cvlface_attention_forward,
+                                                                      self.visual.blocks[layer].attn)
+
     def compute_legrad(self, text_embedding, image=None, apply_correction=True):
         if 'clip' in self.model_type:
             return self.compute_legrad_clip(text_embedding, image)
@@ -140,6 +163,8 @@ class LeWrapper(nn.Module):
             return self.compute_legrad_siglip(text_embedding, image, apply_correction=apply_correction)
         elif 'coca' in self.model_type:
             return self.compute_legrad_coca(text_embedding, image)
+        elif 'cvlface' in self.model_type:
+            return self.compute_legrad_cvlface(image, text_embedding)
 
     def compute_legrad_clip(self, text_embedding, image=None):
         num_prompts = text_embedding.shape[0]
@@ -293,6 +318,41 @@ class LeWrapper(nn.Module):
         Res = F.interpolate(Res, scale_factor=self.patch_size, mode='bilinear')  # [B, 1, H, W]
 
         return Res
+
+    def compute_legrad_cvlface(self, image, target_embedding=None):
+        if target_embedding is None:
+            with torch.no_grad():
+                target_embedding = self.forward(image)
+                target_embedding = F.normalize(target_embedding, dim=-1)
+        else:
+            target_embedding = F.normalize(target_embedding, dim=-1)
+
+        blocks_list = list(dict(self.visual.blocks.named_children()).values())
+        w = h = int(math.sqrt(self.visual.num_patches))
+
+        accum_expl_map = 0
+        for layer, blk in enumerate(blocks_list[self.starting_depth:]):
+            self.zero_grad()
+            img_feat = blk.feat_post_mlp
+            norm_feat = self.visual.norm(img_feat.float())
+            flat_feat = norm_feat.reshape(norm_feat.shape[0], -1)
+            inter_feat = self.visual.feature(flat_feat)
+            inter_feat = F.normalize(inter_feat, dim=-1)
+
+            sim = target_embedding @ inter_feat.transpose(-1, -2)
+            one_hot = torch.sum(sim)
+
+            attn_map = blk.attn.attention_map
+            grad = torch.autograd.grad(one_hot, [attn_map], retain_graph=True, create_graph=True)[0]
+            grad = torch.clamp(grad, min=0.)
+
+            image_relevance = grad.mean(dim=1).mean(dim=1)
+            expl_map = rearrange(image_relevance, 'b (w h) -> b 1 w h', w=w, h=h)
+            expl_map = F.interpolate(expl_map, scale_factor=self.patch_size, mode='bilinear')
+            accum_expl_map += expl_map
+
+        accum_expl_map = min_max(accum_expl_map)
+        return accum_expl_map
 
 
 class LePreprocess(nn.Module):
